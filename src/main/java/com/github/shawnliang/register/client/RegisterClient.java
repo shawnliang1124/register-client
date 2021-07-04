@@ -16,25 +16,33 @@ public class RegisterClient {
     public static final int PORT = 9000;
     private static final Long HEARTBEAT_INTERVAL = 3 * 1000L;
 
-    private String serviceInstanceId;
+    private final String serviceInstanceId;
 
-    private boolean isRunning;
+    private volatile boolean isRunning;
 
     private HttpSender httpSender;
 
     private HeartBeatWorker heartBeatWorker;
+
+    private ClientCachedServiceRegister cachedServiceRegister;
 
     public RegisterClient() {
         this.serviceInstanceId = UUID.randomUUID().toString().replace("-", "");
         this.httpSender = new HttpSender();
         this.heartBeatWorker = new HeartBeatWorker();
         this.isRunning = true;
+        cachedServiceRegister = new ClientCachedServiceRegister(this);
     }
+
+    public HttpSender getHttpSender() {
+        return httpSender;
+    }
+
 
     /**
      * 初始化方法
      * 1、先调用注册线程， 发送注册请求给注册中心
-     * 2、调用心跳线程，定时向注册中心发送心跳
+     * 2、调用心跳线程，定时向注册中心发送心跳，保证她的存活性
      *
      *
      */
@@ -45,7 +53,11 @@ public class RegisterClient {
             registerWorker.start();
             registerWorker.join();
 
-            new HeartBeatWorker().start();
+            // 启动心跳线程，发送心跳信息
+            heartBeatWorker.start();
+
+            // 启动缓存注册线程，定期拉取注册表
+            cachedServiceRegister.initial();
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -53,11 +65,24 @@ public class RegisterClient {
 
     /**
      * interrupt 让休眠的线程从睡眠中恢复
+     * interrupt，让拉取注册表的定时任务马上中断
      * 同时修改isRunning的值，让心跳线程从while死循环出跳出
      */
     public void shutDown() {
-        heartBeatWorker.interrupt();
         isRunning = false;
+        heartBeatWorker.interrupt();
+        this.cachedServiceRegister.destroy();
+    }
+
+    /**
+     * 从注册中心下线
+     */
+    public void cancel() {
+        httpSender.cancelFromServer(SERVICE_NAME, serviceInstanceId);
+    }
+
+    public boolean isRunning() {
+        return this.isRunning;
     }
 
     class RegisterWorker extends Thread {
